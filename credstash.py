@@ -166,14 +166,12 @@ def KMSConnect(session, region_name=None):
     return session.client('kms', region_name=region_name)
 
 
-def getHighestVersion(name, region=None, table="credential-store",
-                      profile_name=None):
+def getHighestVersion(name, dynamodb,
+                        table="credential-store"):
     '''
     Return the highest version of `name` in the table
     '''
-    session = boto3.Session(profile_name=profile_name)
 
-    dynamodb = session.resource('dynamodb', region_name=region)
     secrets = dynamodb.Table(table)
 
     response = secrets.query(Limit=1,
@@ -187,14 +185,11 @@ def getHighestVersion(name, region=None, table="credential-store",
     return response["Items"][0]["version"]
 
 
-def listSecrets(region=None, table="credential-store", profile_name=None):
+def listSecrets(dynamodb, table="credential-store"):
     '''
     do a full-table scan of the credential-store,
     and return the names and versions of every credential
     '''
-    session = boto3.Session(profile_name=profile_name)
-
-    dynamodb = session.resource('dynamodb', region_name=region)
     secrets = dynamodb.Table(table)
 
     response = secrets.scan(ProjectionExpression="#N, version",
@@ -202,17 +197,16 @@ def listSecrets(region=None, table="credential-store", profile_name=None):
     return response["Items"]
 
 
-def putSecret(name, secret, version, kms_key="alias/credstash",
-              region=None, table="credential-store", context=None,
-              profile_name=None):
+def putSecret(name, secret, version,
+                kms, dynamodb,
+                kms_key="alias/credstash",
+                table="credential-store", context=None):
     '''
     put a secret called `name` into the secret-store,
     protected by the key kms_key
     '''
     if not context:
         context = {}
-    session = boto3.Session(profile_name=profile_name)
-    kms = session.client('kms', region_name=region)
     # generate a a 64 byte key.
     # Half will be for data encryption, the other half for HMAC
     try:
@@ -231,7 +225,6 @@ def putSecret(name, secret, version, kms_key="alias/credstash",
     hmac = HMAC(hmac_key, msg=c_text, digestmod=SHA256)
     b64hmac = hmac.hexdigest()
 
-    dynamodb = session.resource('dynamodb', region_name=region)
     secrets = dynamodb.Table(table)
 
     data = {}
@@ -244,36 +237,36 @@ def putSecret(name, secret, version, kms_key="alias/credstash",
     return secrets.put_item(Item=data, ConditionExpression=Attr('name').not_exists())
 
 
-def getAllSecrets(version="", region=None,
-                  table="credential-store", context=None, profile_name=None):
+def getAllSecrets(kms, dynamodb,
+                    version="", table="credential-store",
+                    context=None):
     '''
     fetch and decrypt all secrets
     '''
     output = {}
-    secrets = listSecrets(region, table, profile_name=profile_name)
+    secrets = listSecrets(dynamodb, table)
     for credential in set([x["name"] for x in secrets]):
         try:
             output[credential] = getSecret(credential,
                                            version,
-                                           region,
                                            table,
                                            context,
-                                           profile_name=profile_name)
+                                           kms=kms,
+                                           dynamodb=dynamodb)
         except:
             pass
     return output
 
 
-def getSecret(name, version="", region=None,
-              table="credential-store", context=None, profile_name=None):
+def getSecret(name, kms, dynamodb,
+                version="", table="credential-store",
+                context=None):
     '''
     fetch and decrypt the secret called `name`
     '''
     if not context:
         context = {}
 
-    session = boto3.Session(profile_name=profile_name)
-    dynamodb = session.resource('dynamodb', region_name=region)
     secrets = dynamodb.Table(table)
 
     if version == "":
@@ -291,7 +284,6 @@ def getSecret(name, version="", region=None,
             raise ItemNotFound("Item {'name': '%s', 'version': '%s'} couldn't be found." % (name, version))
         material = response["Item"]
 
-    kms = session.client('kms', region_name=region)
     # Check the HMAC before we decrypt to verify ciphertext integrity
     try:
         kms_response = kms.decrypt(CiphertextBlob=b64decode(material['key']), EncryptionContext=context)
@@ -323,10 +315,8 @@ def getSecret(name, version="", region=None,
     return plaintext
 
 
-def deleteSecrets(name, region=None, table="credential-store",
-                  profile_name=None):
-    session = boto3.Session(profile_name=profile_name)
-    dynamodb = session.resource('dynamodb', region_name=region)
+def deleteSecrets(name, dynamodb,
+                    table="credential-store"):
     secrets = dynamodb.Table(table)
 
     response = secrets.scan(FilterExpression=boto3.dynamodb.conditions.Attr("name").eq(name),
@@ -338,12 +328,12 @@ def deleteSecrets(name, region=None, table="credential-store",
         secrets.delete_item(Key=secret)
 
 
-def createDdbTable(region=None, table="credential-store", profile_name=None):
+def createDdbTable(session, dynamodb,
+                    table="credential-store",
+                    region=None):
     '''
     create the secret store table in DDB in the specified region
     '''
-    session = boto3.Session(profile_name=profile_name)
-    dynamodb = session.resource("dynamodb", region_name=region)
     if table in (t.name for t in dynamodb.tables.all()):
         print("Credential Store table already exists")
         return
@@ -508,18 +498,18 @@ def main():
 
     try:
         session = AWSConnect(profile_name=args.profile)
-        dynamo_session, region = DynamoDBConnect(session, region_name=args.region)
+        dynamodb, region = DynamoDBConnect(session, region_name=args.region)
     except:
         fatal("Connection error")
 
     if "action" in vars(args):
         if args.action == "delete":
-            deleteSecrets(args.credential, region=region, table=args.table,
-                          profile_name=args.profile)
+            deleteSecrets(args.credential, dynamodb,
+                          table=args.table)
             return
         if args.action == "list":
-            credential_list = listSecrets(region=region, table=args.table,
-                                          profile_name=args.profile)
+            credential_list = listSecrets(dynamodb,
+                                          table=args.table)
             if credential_list:
                 # print list of credential names and versions,
                 # sorted by name and then by version
@@ -532,9 +522,8 @@ def main():
                 return
         if args.action == "put":
             if args.autoversion:
-                latestVersion = getHighestVersion(args.credential, region,
-                                                  args.table,
-                                                  profile_name=args.profile)
+                latestVersion = getHighestVersion(args.credential, dynamodb,
+                                                  args.table)
                 try:
                     version = paddedInt(int(latestVersion) + 1)
                 except ValueError:
@@ -543,9 +532,11 @@ def main():
             else:
                 version = args.version
             try:
+                kms = KMSConnect(session, region_name=region)
                 if putSecret(args.credential, args.value, version,
-                             kms_key=args.key, region=region, table=args.table,
-                             context=args.context, profile_name=args.profile):
+                             kms, dynamodb,
+                             kms_key=args.key, table=args.table,
+                             context=args.context):
                     print("{0} has been stored".format(args.credential))
             except KmsError as e:
                 fatal(e)
@@ -565,22 +556,24 @@ def main():
                     names = expand_wildcard(args.credential,
                                             [x["name"]
                                              for x
-                                             in listSecrets(region=region,
-                                                            table=args.table,
-                                                            profile_name=args.profile)])
+                                             in listSecrets(dynamodb,
+                                                            region=region,
+                                                            table=args.table)])
                     print(json.dumps(dict((name,
                                           getSecret(name,
+                                                    kms,
+                                                    dynamodb,
                                                     args.version,
-                                                    region=region,
                                                     table=args.table,
-                                                    context=args.context,
-                                                    profile_name=args.profile))
+                                                    context=args.context))
                                           for name in names)))
                 else:
-                    sys.stdout.write(getSecret(args.credential, args.version,
-                                               region=region, table=args.table,
-                                               context=args.context,
-                                               profile_name=args.profile))
+                    sys.stdout.write(getSecret(args.credential,
+                                               kms,
+                                               dynamodb,
+                                               args.version,
+                                               table=args.table,
+                                               context=args.context))
                     if not args.noline:
                         sys.stdout.write("\n")
             except ItemNotFound as e:
@@ -591,11 +584,11 @@ def main():
                 fatal(e)
             return
         if args.action == "getall":
-            secrets = getAllSecrets(args.version,
-                                    region=region,
+            secrets = getAllSecrets(kms,
+                                    dynamodb,
+                                    args.version,
                                     table=args.table,
-                                    context=args.context,
-                                    profile_name=args.profile)
+                                    context=args.context)
             if args.format == "json":
                 output_func = json.dumps
                 output_args = {"sort_keys": True,
@@ -610,8 +603,9 @@ def main():
             print(output_func(secrets, **output_args))
             return
         if args.action == "setup":
-            createDdbTable(region=region, table=args.table,
-                           profile_name=args.profile)
+            createDdbTable(session, dynamodb,
+                           table=args.table,
+                           region=region)
             return
     else:
         parsers['super'].print_help()
