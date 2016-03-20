@@ -142,6 +142,30 @@ def paddedInt(i):
     pad = PAD_LEN - len(i_str)
     return (pad * "0") + i_str
 
+
+def AWSConnect(profile_name=None):
+    try:
+        return boto3.Session(profile_name=profile_name)
+    except:
+        return None
+
+
+def DynamoDBConnect(session, region_name=None):
+    if not region_name:
+        if not 'AWS_DEFAULT_REGION' in os.environ:
+            region_name = DEFAULT_REGION
+        else:
+            return None
+    try:
+        return session.resource('dynamodb', region_name=region_name), region_name
+    except:
+        return None
+
+
+def KMSConnect(session, region_name=None):
+    return session.client('kms', region_name=region_name)
+
+
 def getHighestVersion(name, region=None, table="credential-store",
                       profile_name=None):
     '''
