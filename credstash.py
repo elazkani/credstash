@@ -507,12 +507,10 @@ def main():
     args = parsers['super'].parse_args()
 
     try:
-        region = args.region
-        session = boto3.Session(profile_name=args.profile)
-        session.resource('dynamodb', region_name=region)
-    except botocore.exceptions.NoRegionError:
-        if not 'AWS_DEFAULT_REGION' in os.environ:
-            region = DEFAULT_REGION
+        session = AWSConnect(profile_name=args.profile)
+        dynamo_session, region = DynamoDBConnect(session, region_name=args.region)
+    except:
+        fatal("Connection error")
 
     if "action" in vars(args):
         if args.action == "delete":
