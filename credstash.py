@@ -558,7 +558,6 @@ def main():
                                             [x["name"]
                                              for x
                                              in listSecrets(dynamodb,
-                                                            region=region,
                                                             table=args.table)])
                     print(json.dumps(dict((name,
                                           getSecret(name,
