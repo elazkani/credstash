@@ -552,6 +552,7 @@ def main():
                     fatal(e)
         if args.action == "get":
             try:
+                kms = KMSConnect(session, region_name=region)
                 if WILDCARD_CHAR in args.credential:
                     names = expand_wildcard(args.credential,
                                             [x["name"]
@@ -584,6 +585,7 @@ def main():
                 fatal(e)
             return
         if args.action == "getall":
+            kms = KMSConnect(session, region_name=region)
             secrets = getAllSecrets(kms,
                                     dynamodb,
                                     args.version,
